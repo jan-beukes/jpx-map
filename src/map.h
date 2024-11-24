@@ -1,19 +1,27 @@
 #include <raylib.h>
 #include <stdlib.h>
 
-#define MAP_BB_LIMIT_FACTOR 3
-#define LEVELS_OF_ZOOM 3
+typedef struct {
+    int x;
+    int y;
+    int zoom;
+} Tile;
+
+typedef struct {
+    double x;
+    double y;
+} Point;
 
 typedef struct {
     const char *filename;
-    Vector2 *points; //(long, lat)
+    Point *points; //(long, lat)
     int *hr_values;
     size_t num_points;
 } GpxData;
 
 typedef struct {
-    Vector2 min;
-    Vector2 max;
+    Point min;
+    Point max;
 } MapBB;
 
 typedef struct {
@@ -22,8 +30,8 @@ typedef struct {
     int base_zoom;
 } MapData;
 
-MapBB mapbb_from_borders(float lon_min, float lon_max, float lat_min, float lat_max);
-int tile_zoom_from_bb(MapBB bb);
+
+void fetch_map_tiles(GpxData gpx_data);
 
 GpxData get_gpx_data(const char *file_name);
 void free_gpx_data(GpxData data);

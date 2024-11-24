@@ -2,21 +2,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <curl/curl.h>
-#include "tile_fetch.h"
 
-#ifndef API_TOK
-#define API_TOK ""
-#endif
-
-#define URL "https://api.mapbox.com/v4/%s/%d/%d/%d/.jpg"
+#define URL "https://api.mapbox.com/v4/%s/%d/%d/%d.jpg?access_token=%s"
 #define TILE_SET "mapbox.satellite"
 
 size_t write_file(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     size_t written = fwrite(ptr, size, nmemb, stream);
+    size_t bytes = size * nmemb;
+    printf("Wrote %zu bytes\n", bytes);
     return written;
 }
 
 void fetch_map_tile(int x, int y, int zoom, const char *savedir) {
+#ifndef API_TOK
+    #define API_TOK ""
+    fprintf(stderr, "Error: No API_TOK defined\n");
+    exit(1);
+#endif
     CURL *curl;
     CURLcode res;
     FILE *file;
@@ -25,12 +27,13 @@ void fetch_map_tile(int x, int y, int zoom, const char *savedir) {
     curl = curl_easy_init();
     
     // Set the URL of the tile
-    char url[strlen(URL) + 64];
-    sprintf(url, URL, TILE_SET, zoom, x, y);
+    char url[strlen(URL) + strlen(API_TOK) + 64];
+    sprintf(url, URL, TILE_SET, zoom, x, y, API_TOK);
+    printf("Request: %s\n", url);
 
     // Open the file for writing
-    char fname[64];
-    sprintf(fname, "tile_%d_%d.jpg", x, y);
+    char fname[128];
+    sprintf(fname, "%s/tile_%dx_%dy.jpg", savedir, x, y);
     file = fopen(fname, "wb");
     if (!file) {
         fprintf(stderr, "ERROR: couldn't open file %s", fname);
