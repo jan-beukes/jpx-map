@@ -2,51 +2,62 @@
 #include <raylib.h>
 #include <stdlib.h>
 #include <string.h>
-#include "image_req.h"
+#include "map.h"
 
-#define MAP_WIDTH 1280
-#define MAP_HEIGHT 720
-#define MAP_STYLE "satellite-streets-v12"
+#define SCREEN_WIDTH 1280
+#define SCREEN_HEIGHT 720
 
 #define CACHE ".cache"
+#define TEST_FILE "goofy.gpx"
 
-#define TEST_FILE "test.gpx"
-#define URL "https://api.mapbox.com/styles/v1/mapbox/%s/static/[%f,%f,%f,%f]/%dx%d?access_token="
+typedef struct {
+    Vector2 *points;
+    Texture *tiles;
+    MapBB render_bb;
+} MapRender;
 
-int main() {
+int main(int argc, char *argv[]) {
+    /*if (argc == 1) {*/
+    /*    fprintf(stderr, "Please provide gpx file");*/
+    /*    exit(1);*/
+    /*}*/
+    /**/
+    const char *file_name = TEST_FILE;
 
-    const char *name = GetFileNameWithoutExt(TEST_FILE);
-    if (!DirectoryExists(CACHE)) {
-        MakeDirectory(CACHE);
+    if (argc > 1) {
+        if (strcmp(argv[1], "--clear") == 0) {
+            if (DirectoryExists(CACHE)) {
+            system("rm -rf " CACHE "/*");
+            }
+            printf("Cleared Cache\n");
+        }
+        else {
+            fprintf(stderr, "Invalid arguments\n");
+            exit(1);
+        }
     }
 
-    // Handle cached map images
-    Texture map_texture;
-    if (!DirectoryExists(TextFormat("%s/%s", CACHE, name))) {
-        MakeDirectory(TextFormat("%s/%s", CACHE, name));
+    GpxData gpx_data = get_gpx_data(file_name);
 
-        // Request
-        Vector2 min = {18.8422, -33.9539};
-        Vector2 max = {18.9232, -33.9161};
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "jpx");
 
-        const char *url = TextFormat(URL, MAP_STYLE, min.x, min.y, max.x, max.y, MAP_WIDTH, MAP_HEIGHT);
+    BeginDrawing();
+    {
+        const Color b = {0, 0, 0, 80};
+        const int font_size = 40;
+        const int width = MeasureText("Downloading...", font_size);
+        Vector2 pos = {SCREEN_WIDTH/2.0f - width/2.0f, SCREEN_HEIGHT/2.0f - font_size/2.0f};
+        DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, b);
+        DrawText("Downloading...", pos.x, pos.y, font_size, RAYWHITE);
+    }
+    EndDrawing();
 
 
-        MemChunk chunk = fetch_image(url, strlen(url));
-        FILE *file = fopen(TextFormat("%s/%s/cached_map.png", CACHE, name), "w");
-        if (!file) {
-            perror("ERROR: Failed to open image from cache\n");
-        } else {
-            fwrite(chunk.memory, 1, chunk.size, file);
-            fclose(file);
-        }
-        free(chunk.memory);
-    } 
-    
-    InitWindow(1280, 720, "jpx");
-    
+    MapBB bb = {(Vector2){17.3062, -34.5229}, (Vector2){19.8089, -33.355}};
 
-    map_texture = LoadTexture(TextFormat("%s/%s/cached_map.png", CACHE, name));
+    MapRender render = {
+        .points = gpx_data.points,
+    };
 
     while (!WindowShouldClose()) {
 
