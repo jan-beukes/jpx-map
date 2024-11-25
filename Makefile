@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall
+CFLAGS = -Wall -g
 LFLAGS = -L libs -lcurl -lraylib -lm
 
 API_TOK ?= pk.eyJ1IjoiZGlzdHVyYmVkLXdhZmZsZSIsImEiOiJjbTN1cTFuMHAwZ3RwMmtzZmV1ajRtcmF3In0.VrF87lJUjSEaoZCSBK37RQ
