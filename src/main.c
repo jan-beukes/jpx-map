@@ -2,7 +2,9 @@
 #include <raylib.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <math.h>
+#include <stdatomic.h>
 #include "map.h"
 #include "tile_req.h"
 #include "stb_ds.h"
@@ -12,13 +14,24 @@
 #define A_RATIO ((double)SCREEN_HEIGHT/SCREEN_WIDTH)
 
 #define CACHE ".cache"
+
 #define MAX_CACHED_TILES 1000
 #define MAX_DL_THREADS 8
+#define MAX_TILES_PER_REQUEST 32
 
 #define SCREEN_TILE_COUNT 6 // desired tile count
 
 // glob
-int active_download_threads = 0;
+atomic_int active_download_threads = 0;
+pthread_mutex_t mutex;
+
+void increment_threads() {
+    atomic_fetch_add(&active_download_threads, 1);
+}
+void decrement_threads() {
+    atomic_fetch_sub(&active_download_threads, 1);
+    assert(atomic_load(&active_download_threads) >= 0);
+}
 
 MapBB get_screen_bb(Point top_left, double width) {
     MapBB b;
@@ -45,46 +58,77 @@ Rectangle tile_screen_rect(MapBB screen, Tile t) {
     return (Rectangle){x_off, y_off, size, size};
 }
 
+#define FALLBACK_LIMIT 4
+Texture *get_fallback_tile_texture(Tile *t, Item **tile_cache) {
+    for (int i = 0; i < FALLBACK_LIMIT; i++) {
+        t->zoom -= 1;
+        t->x /= 2;
+        t->y /= 2;
+        Item *item;
+        if ((item = hmgetp_null(*tile_cache, *t)) == NULL) continue;
+        if (item->value.status != TILE_READY) continue;
+
+        return &item->value.texture;
+    }
+
+    return NULL;
+}
+
 void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
     Item *tile_cache = *tile_cache_ptr;
 
     Tile min = point_to_tile(screen.min, zoom);
     Tile max = point_to_tile(screen.max, zoom);
 
-    int capacity = (max.x - min.x + 1) * (max.y - min.y + 1);
-    Tile request_tiles[capacity];
+    Tile request_tiles[MAX_TILES_PER_REQUEST];
     int tile_req_count = 0;
     
+    int unloaded = 0;
     for (int y = min.y; y <= max.y; y++) {
         for (int x = min.x; x <= max.x; x++) {
             Tile t = {zoom, x, y};
+            bool fallback = false;
 
             // not cached
             if (hmgeti(tile_cache, t) == -1) {
-                request_tiles[tile_req_count++] = t;
-                continue;
+                if (tile_req_count < MAX_TILES_PER_REQUEST) request_tiles[tile_req_count++] = t;
+                fallback = true;
             } 
+            TileData *data = &hmgetp(tile_cache, t)->value;
+            if (data->status == TILE_NOT_READY) {
+                unloaded++;
+                fallback = true;
+            }
+            else if (data->status == TILE_LOADED) {
+                data->status = TILE_READY;
+                data->texture = LoadTextureFromImage(data->tile_img);
+            }
 
-            TileData data = hmget(tile_cache, t);
-            if (!data.ready) continue; // not done fetching texture
+            Texture texture;
+            if (fallback) {
+                Texture *ptr = get_fallback_tile_texture(&t, tile_cache_ptr);
+                if (ptr == NULL) continue;
+                texture = *ptr;
+            } else {
+                texture = data->texture;
+            }
 
-            Texture texture = LoadTextureFromImage(data.tile_img);
             Rectangle rec = tile_screen_rect(screen, t);
             Rectangle src = {0, 0, texture.width, texture.height};
             DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
         }
     }
 
-    if (active_download_threads < MAX_DL_THREADS && tile_req_count > 0) {
-        active_download_threads++;
-        printf("Request %d started\n", active_download_threads);
+    DrawText(TextFormat("Not Loaded %d", unloaded), 10, 50, 30, BLUE);
+
+    if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
+        increment_threads();
         TileRequest request = {
             .tiles = request_tiles,
             .tile_count = tile_req_count,
         };
-        start_download_thread(request, tile_cache_ptr, &active_download_threads);
+        start_download_thread(request, tile_cache_ptr, &mutex, decrement_threads);
     }
-
 
 }
 
@@ -95,6 +139,7 @@ int main(int argc, char *argv[]) {
 
     // Cache hash map
     Item *tile_cache = NULL;
+    pthread_mutex_init(&mutex, NULL);
 
     Point tl = {18.84587, -33.9225};
     double width = 0.0699;
@@ -102,26 +147,33 @@ int main(int argc, char *argv[]) {
 
     int min_zoom = ZOOM_FROM_WIDTH(width) - 1;
     int max_zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
-    int zoom = max_zoom;
+    int zoom = min_zoom;
 
     while (!WindowShouldClose()) {
 
+        if (IsKeyPressed(KEY_EQUAL) && zoom < 19) {
+            zoom++;
+        } else if (IsKeyPressed(KEY_MINUS) && zoom > 0) {
+            zoom--;
+        }
+
         BeginDrawing();
-        ClearBackground(BLACK);
+        ClearBackground(RAYWHITE);
 
         render_tiles(screen, zoom, &tile_cache);
+        DrawText(TextFormat("Active Threads %d", active_download_threads), 10, 10, 30, BLUE);
 
         EndDrawing();
-
-        // Increase res
-        //if (zoom < max_zoom) {
-        //    zoom++;
-        //}
     }
+    printf("HM length: %ld\n", hmlen(tile_cache));
+
+    pthread_mutex_destroy(&mutex);
 
     // Unload cached tiles
     for (int i = 0; i < hmlen(tile_cache); i++) {
-        UnloadImage(tile_cache[i].value.tile_img);
+        TileData data = tile_cache[i].value;
+        if (data.status == TILE_LOADED) UnloadImage(data.tile_img);
+        if (data.status == TILE_READY) UnloadTexture(data.texture);
     }
     CloseWindow();
 

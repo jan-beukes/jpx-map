@@ -2,17 +2,19 @@
 #define TILE_REQ_H
 
 #include <raylib.h>
+#include <pthread.h>
 #include "map.h"
 
 typedef enum {
     TILE_READY,
     TILE_LOADED,
-    NOT_READY,
+    TILE_NOT_READY,
 } TileDataStatus;
 
 typedef struct {
     Image tile_img;
-    TileDataStatus status;
+    Texture texture;
+    TileDataStatus status; 
     long last_accessed; // TODO: implement cache eviction
 } TileData;
 
@@ -28,10 +30,11 @@ typedef struct {
 
 typedef struct {
     TileRequest request;
-    void *user_data;
+    void (*call_back)(void);
     Item **tile_cache; // cache hash map
+    pthread_mutex_t *mutex;
 } DownloadContext;
 
-void start_download_thread(TileRequest request, Item **tile_cache, void *userdata);
+void start_download_thread(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void));
 
 #endif
