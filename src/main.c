@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <raylib.h>
+#include <raymath.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -16,10 +17,14 @@
 #define CACHE ".cache"
 
 #define MAX_CACHED_TILES 1000
-#define MAX_DL_THREADS 8
-#define MAX_TILES_PER_REQUEST 32
 
-#define SCREEN_TILE_COUNT 6 // desired tile count
+#define SCREEN_TILE_COUNT (SCREEN_HEIGHT/100) // desired tile count
+#define MAX_ZOOM 19
+#define MIN_ZOOM 4
+#define ZOOM_SPEED 7
+
+#define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
+#define SCREEN_BR(__s) ((Coord){__s.max.x, __s.min.y})
 
 // glob
 atomic_int active_download_threads = 0;
@@ -33,52 +38,91 @@ void decrement_threads() {
     assert(atomic_load(&active_download_threads) >= 0);
 }
 
-MapBB get_screen_bb(Point top_left, double width) {
+MapBB get_screen_bb(Coord top_left, double width) {
     MapBB b;
-    b.min = top_left;
+    b.min.x = top_left.x;
+    b.max.y = top_left.y;
     b.max.x = top_left.x + width;
-    b.max.y = top_left.y - width*A_RATIO;
+    b.min.y = top_left.y - width*A_RATIO;
     return b;
 }
 
+Vector2 point_to_screen(Coord p, MapBB screen) {
+    double width = screen.max.x - screen.min.x;
+    double height = screen.max.y - screen.min.y;
+
+    double x_ratio = (p.x - screen.min.x) / width;
+    double y_ratio = (screen.max.y - p.y) / height;
+
+    return (Vector2) {
+        .x = x_ratio * SCREEN_WIDTH,
+        .y = y_ratio * SCREEN_HEIGHT,
+    };
+}
+
+Coord screen_to_coord(Vector2 screen_pos, MapBB screen) {
+    double width = screen.max.x - screen.min.x;
+    double height = screen.max.y - screen.min.y;
+
+    double x_coord = screen.min.x + screen_pos.x * (width / SCREEN_WIDTH); 
+    double y_coord = screen.max.y - screen_pos.y * (height / SCREEN_HEIGHT);
+
+    return (Coord) {x_coord, y_coord};
+}
+
 Rectangle tile_screen_rect(MapBB screen, Tile t) {
-    Point tile_point = tile_to_point(t);
-    double lon_offset = tile_point.x - screen.min.x;
-    double lat_offset = tile_point.y - screen.min.y;
+    // mercator pixel_coords
+    Vector2 pixel_topleft = coord_to_pixel_space(SCREEN_TL(screen), t.zoom);
+    Vector2 pixel_bottomright = coord_to_pixel_space(SCREEN_BR(screen), t.zoom);
 
-    float x_scale_factor = SCREEN_WIDTH/(screen.max.x - screen.min.x);
-    float y_scale_factor = SCREEN_HEIGHT/(screen.max.y - screen.min.y);
-    
-#define MAGIC_FIX_NUMBER 1.2
-    float x_off = lon_offset * x_scale_factor;
-    float y_off = lat_offset * y_scale_factor * MAGIC_FIX_NUMBER;
+    double scale = fmax(
+            SCREEN_WIDTH / (pixel_bottomright.x - pixel_topleft.x),
+            SCREEN_HEIGHT / (pixel_bottomright.y - pixel_topleft.y)
+    );
 
-    double size = TILE_WIDTH(t.zoom) * x_scale_factor;
+    double tile_pixel_x = t.x * 256;
+    double tile_pixel_y = t.y * 256;
 
-    return (Rectangle){x_off, y_off, size, size};
+    float tile_x_screen = (tile_pixel_x - pixel_topleft.x) * scale;
+    float tile_y_screen = (tile_pixel_y - pixel_topleft.y) * scale;
+    float tile_width = 256 * scale;
+    float tile_height = 256 * scale;
+
+    return (Rectangle){tile_x_screen, tile_y_screen, tile_width, tile_height};
+}
+
+void pre_cache_tiles(MapBB screen, int zoom, Item **tile_cache) {
+
 }
 
 #define FALLBACK_LIMIT 4
-Texture *get_fallback_tile_texture(Tile *t, Item **tile_cache) {
+void render_fallback_tiles(Tile t, MapBB screen, Item **tile_cache) {
+    Tile temp = t;
+    // lower res tiles
     for (int i = 0; i < FALLBACK_LIMIT; i++) {
-        t->zoom -= 1;
-        t->x /= 2;
-        t->y /= 2;
+        temp.zoom -= 1;
+        temp.x /= 2;
+        temp.y /= 2;
         Item *item;
-        if ((item = hmgetp_null(*tile_cache, *t)) == NULL) continue;
+        if ((item = hmgetp_null(*tile_cache, temp)) == NULL) continue;
         if (item->value.status != TILE_READY) continue;
 
-        return &item->value.texture;
+        // found fallback
+        Texture texture = item->value.texture;
+        Rectangle rec = tile_screen_rect(screen, temp);
+        Rectangle src = {0, 0, texture.width, texture.height};
+        DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
+        //DrawRectangleLinesEx(rec, 1, DARKGREEN);
+        return;
     }
 
-    return NULL;
 }
 
 void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
     Item *tile_cache = *tile_cache_ptr;
 
-    Tile min = point_to_tile(screen.min, zoom);
-    Tile max = point_to_tile(screen.max, zoom);
+    Tile min = coord_to_tile(SCREEN_TL(screen), zoom);
+    Tile max = coord_to_tile(SCREEN_BR(screen), zoom);
 
     Tile request_tiles[MAX_TILES_PER_REQUEST];
     int tile_req_count = 0;
@@ -104,21 +148,19 @@ void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
                 data->texture = LoadTextureFromImage(data->tile_img);
             }
 
-            Texture texture;
+            // desired tile is not available
             if (fallback) {
-                Texture *ptr = get_fallback_tile_texture(&t, tile_cache_ptr);
-                if (ptr == NULL) continue;
-                texture = *ptr;
-            } else {
-                texture = data->texture;
+                render_fallback_tiles(t, screen, tile_cache_ptr);
+                continue;
             }
 
+            Texture texture = data->texture;
             Rectangle rec = tile_screen_rect(screen, t);
             Rectangle src = {0, 0, texture.width, texture.height};
             DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
+            //DrawRectangleLinesEx(rec, 1, DARKGREEN);
         }
     }
-
     DrawText(TextFormat("Not Loaded %d", unloaded), 10, 50, 30, BLUE);
 
     if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
@@ -132,36 +174,106 @@ void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
 
 }
 
+MapBB move_screen(MapBB screen, float dt, int *zoom) {
+    int z = *zoom;
+
+    //---Zooming---
+    float wheel_dir = 0;
+    if ((wheel_dir = GetMouseWheelMove()) > 0 && z < MAX_ZOOM
+        || wheel_dir < 0 && z > MIN_ZOOM) { 
+
+        double width = screen.max.x - screen.min.x;
+        if (wheel_dir > 0) {
+            float zoom = (1 - dt * ZOOM_SPEED);
+            zoom = zoom < 0 ? 0 : zoom;
+            width *= zoom;
+        } else {
+            float zoom = (1 + dt * ZOOM_SPEED);
+            width *= zoom;
+        }
+        double height = width * A_RATIO;
+
+        Vector2 mouse_pos = GetMousePosition();
+
+        Coord prev_mouse_coord = screen_to_coord(mouse_pos, screen);
+        screen.max.x = screen.min.x + width;
+        screen.max.y = screen.min.y + height;
+        Coord current_mouse_coord = screen_to_coord(mouse_pos, screen);
+        Coord displacement = {
+            .x = prev_mouse_coord.x - current_mouse_coord.x,
+            .y = prev_mouse_coord.y - current_mouse_coord.y,
+        };
+        screen.min.x += displacement.x;
+        screen.max.x += displacement.x;
+        screen.min.y += displacement.y;
+        screen.max.y += displacement.y;
+
+        z = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
+    }
+
+    // Movement
+    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+        SetMouseCursor(MOUSE_CURSOR_RESIZE_ALL);
+        Vector2 delta = GetMouseDelta();
+
+        double x_scale = (screen.max.x - screen.min.x) / SCREEN_WIDTH;
+        double y_scale = (screen.max.y - screen.min.y) / SCREEN_HEIGHT;
+
+        Coord coord_delta = {
+            .x = delta.x * x_scale,
+            .y = delta.y * y_scale,
+        };
+        // clamp screen
+        if (screen.min.x - coord_delta.x > -180 && screen.max.x - coord_delta.x < 180) {
+            screen.min.x -= coord_delta.x;
+            screen.max.x -= coord_delta.x;
+        }
+        if (screen.min.y + coord_delta.y > -85.0511 && screen.max.y + coord_delta.y < 85.0511) {
+            screen.min.y += coord_delta.y;
+            screen.max.y += coord_delta.y;
+        }
+
+    } else {
+        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+    }
+
+    *zoom = z;
+    return screen;
+}
+
 int main(int argc, char *argv[]) {
 
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "jpx");
+    SetTargetFPS(144);
 
     // Cache hash map
     Item *tile_cache = NULL;
     pthread_mutex_init(&mutex, NULL);
 
-    Point tl = {18.84587, -33.9225};
+    Coord tl = {18.84587, -33.9225};
     double width = 0.0699;
     MapBB screen = get_screen_bb(tl, width);
 
-    int min_zoom = ZOOM_FROM_WIDTH(width) - 1;
-    int max_zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
-    int zoom = min_zoom;
+    int zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
+
+    // TODO: Pre cache large BB around starting BB
+    pre_cache_tiles(screen, zoom, &tile_cache);
 
     while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
 
-        if (IsKeyPressed(KEY_EQUAL) && zoom < 19) {
-            zoom++;
-        } else if (IsKeyPressed(KEY_MINUS) && zoom > 0) {
-            zoom--;
-        }
+        screen = move_screen(screen, dt, &zoom);
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
         render_tiles(screen, zoom, &tile_cache);
+
         DrawText(TextFormat("Active Threads %d", active_download_threads), 10, 10, 30, BLUE);
+        DrawText(TextFormat("Zoom: %d", zoom), 10, 90, 30, BLUE);
+        DrawText(TextFormat("Top Left: %.2lf %.2lf", screen.min.x, screen.max.y), 10, 130, 20, RED);
+        DrawText(TextFormat("Bottom Right: %.2lf %.2lf", screen.max.x, screen.min.y), 10, 160, 20, RED);
 
         EndDrawing();
     }

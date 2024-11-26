@@ -17,22 +17,23 @@ typedef struct {
 typedef struct {
     double x;
     double y;
-} Point;
+} Coord;
 
 typedef struct {
-    Point min;
-    Point max;
+    Coord min;
+    Coord max;
 } MapBB;
 
 typedef struct {
     const char *filename;
-    Point *points; //(long, lat)
+    Coord *points; //(long, lat)
     int *hr_values;
     size_t num_points;
 } GpxData;
 
-Tile point_to_tile(Point p, int z);
-Point tile_to_point(Tile t);
+Tile coord_to_tile(Coord p, int z);
+Coord tile_to_coord(Tile t);
+Vector2 coord_to_pixel_space(Coord p, int zoom);
 
 GpxData get_gpx_data(const char *file_name);
 void free_gpx_data(GpxData data);

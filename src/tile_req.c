@@ -33,8 +33,6 @@ size_t write_memory(void *contents, size_t size, size_t nmemb, void *userp) {
     return realsize;
 }
 
-#define BATCH_SIZE 10
-
 void *downloader_thread_func(void *arg) {
     DownloadContext *context = (DownloadContext *)arg;
     TileRequest request = context->request;
