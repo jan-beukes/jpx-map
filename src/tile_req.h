@@ -5,9 +5,9 @@
 #include <pthread.h>
 #include "map.h"
 
-#define MAX_DL_THREADS 12
-#define MAX_TILES_PER_REQUEST 24
-#define BATCH_SIZE 12
+#define MAX_DL_THREADS 16
+#define MAX_TILES_PER_REQUEST 32
+#define BATCH_SIZE 8
 
 typedef enum {
     TILE_READY,

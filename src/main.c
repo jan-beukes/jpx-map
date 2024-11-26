@@ -18,10 +18,10 @@
 
 #define MAX_CACHED_TILES 1000
 
-#define SCREEN_TILE_COUNT (SCREEN_HEIGHT/100) // desired tile count
+#define SCREEN_TILE_COUNT 8 // desired tile count
 #define MAX_ZOOM 19
 #define MIN_ZOOM 4
-#define ZOOM_SPEED 7
+#define ZOOM_SPEED 10
 
 #define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
 #define SCREEN_BR(__s) ((Coord){__s.max.x, __s.min.y})
@@ -91,25 +91,54 @@ Rectangle tile_screen_rect(MapBB screen, Tile t) {
     return (Rectangle){tile_x_screen, tile_y_screen, tile_width, tile_height};
 }
 
-void pre_cache_tiles(MapBB screen, int zoom, Item **tile_cache) {
+#define FALLBACK_LIMIT 6
+void pre_cache_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
+    int min_zoom = zoom - FALLBACK_LIMIT;
+    min_zoom = min_zoom < MIN_ZOOM ? MIN_ZOOM : min_zoom;
 
+    Tile request_tiles[MAX_TILES_PER_REQUEST];
+    int tile_req_count = 0;
+    for (int z = zoom - 2; z > min_zoom; z -= 2) {
+        Tile min = coord_to_tile(SCREEN_TL(screen), z);
+        Tile max = coord_to_tile(SCREEN_BR(screen), z);
+
+        for (int y = min.y; y <= max.y; y++) {
+            for (int x = min.x; x <= max.x; x++) {
+                Tile t = {z, x, y};
+                if (tile_req_count < MAX_TILES_PER_REQUEST) {
+                    request_tiles[tile_req_count++] = t;
+                }
+            }
+        }
+
+    }
+    if (tile_req_count > 0) {
+        increment_threads();
+        TileRequest request = {
+            .tiles = request_tiles,
+            .tile_count = tile_req_count,
+        };
+        start_download_thread(request, tile_cache_ptr, &mutex, decrement_threads);
+    }
 }
 
-#define FALLBACK_LIMIT 4
-void render_fallback_tiles(Tile t, MapBB screen, Item **tile_cache) {
-    Tile temp = t;
+void render_fallback_tile(Tile t, MapBB screen, Item **tile_cache) {
     // lower res tiles
     for (int i = 0; i < FALLBACK_LIMIT; i++) {
-        temp.zoom -= 1;
-        temp.x /= 2;
-        temp.y /= 2;
+        t.zoom -= 1;
+        t.x /= 2;
+        t.y /= 2;
         Item *item;
-        if ((item = hmgetp_null(*tile_cache, temp)) == NULL) continue;
-        if (item->value.status != TILE_READY) continue;
+        if ((item = hmgetp_null(*tile_cache, t)) == NULL) continue;
+        if (item->value.status == TILE_NOT_READY) continue;
 
+        if (item->value.status == TILE_LOADED) {
+            item->value.status = TILE_READY;
+            item->value.texture = LoadTextureFromImage(item->value.tile_img);
+        }
         // found fallback
         Texture texture = item->value.texture;
-        Rectangle rec = tile_screen_rect(screen, temp);
+        Rectangle rec = tile_screen_rect(screen, t);
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
         //DrawRectangleLinesEx(rec, 1, DARKGREEN);
@@ -126,41 +155,50 @@ void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
 
     Tile request_tiles[MAX_TILES_PER_REQUEST];
     int tile_req_count = 0;
-    
+
+    int cap = (max.x - min.x + 1) * (max.y - min.y + 1);
+    Item ready_tiles[cap];
+    int ready_tile_count = 0;
+
     int unloaded = 0;
     for (int y = min.y; y <= max.y; y++) {
         for (int x = min.x; x <= max.x; x++) {
             Tile t = {zoom, x, y};
             bool fallback = false;
 
-            // not cached
-            if (hmgeti(tile_cache, t) == -1) {
+            Item *item = hmgetp_null(tile_cache, t);
+            if (item == NULL) {
+                // not cached
                 if (tile_req_count < MAX_TILES_PER_REQUEST) request_tiles[tile_req_count++] = t;
                 fallback = true;
-            } 
-            TileData *data = &hmgetp(tile_cache, t)->value;
-            if (data->status == TILE_NOT_READY) {
+            } else if (item->value.status == TILE_NOT_READY){
                 unloaded++;
                 fallback = true;
-            }
-            else if (data->status == TILE_LOADED) {
-                data->status = TILE_READY;
-                data->texture = LoadTextureFromImage(data->tile_img);
+            } else if (item->value.status == TILE_LOADED) {
+                item->value.status = TILE_READY;
+                item->value.texture = LoadTextureFromImage(item->value.tile_img);
             }
 
             // desired tile is not available
             if (fallback) {
-                render_fallback_tiles(t, screen, tile_cache_ptr);
+                render_fallback_tile(t, screen, tile_cache_ptr);
                 continue;
             }
-
-            Texture texture = data->texture;
-            Rectangle rec = tile_screen_rect(screen, t);
-            Rectangle src = {0, 0, texture.width, texture.height};
-            DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
-            //DrawRectangleLinesEx(rec, 1, DARKGREEN);
+            assert(item->value.status == TILE_READY);
+            ready_tiles[ready_tile_count++] = *item;
         }
     }
+    // Render ready tiles after all fallback tiles
+    for (int i = 0; i < ready_tile_count; i++) {
+        Item item = ready_tiles[i];
+        Texture texture = item.value.texture;
+        Rectangle rec = tile_screen_rect(screen, item.key);
+        Rectangle src = {0, 0, texture.width, texture.height};
+        DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
+    }
+
+
+
     DrawText(TextFormat("Not Loaded %d", unloaded), 10, 50, 30, BLUE);
 
     if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
@@ -266,7 +304,7 @@ int main(int argc, char *argv[]) {
         screen = move_screen(screen, dt, &zoom);
 
         BeginDrawing();
-        ClearBackground(RAYWHITE);
+        ClearBackground(LIGHTGRAY);
 
         render_tiles(screen, zoom, &tile_cache);
 
