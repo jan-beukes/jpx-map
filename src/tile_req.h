@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include "map.h"
 
-#define MAX_DL_THREADS 16
+#define MAX_DL_THREADS 8
 #define MAX_TILES_PER_REQUEST 32
 #define BATCH_SIZE 8
 

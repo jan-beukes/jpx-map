@@ -125,7 +125,6 @@ void *downloader_thread_func(void *arg) {
         Tile t = request.tiles[i];
         TileData data = hmget(*context->tile_cache, t);
         if (data.status == TILE_NOT_READY) {
-            printf("Tile wasnt loaded\n");
             int r = hmdel(*context->tile_cache, t);
         }
     }

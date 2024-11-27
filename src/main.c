@@ -217,8 +217,8 @@ MapBB move_screen(MapBB screen, float dt, int *zoom) {
 
     //---Zooming---
     float wheel_dir = 0;
-    if ((wheel_dir = GetMouseWheelMove()) > 0 && z < MAX_ZOOM
-        || wheel_dir < 0 && z > MIN_ZOOM) { 
+    if (((wheel_dir = GetMouseWheelMove()) > 0 && z < MAX_ZOOM)
+        || (wheel_dir < 0 && z > MIN_ZOOM)) { 
 
         double width = screen.max.x - screen.min.x;
         if (wheel_dir > 0) {
@@ -229,7 +229,15 @@ MapBB move_screen(MapBB screen, float dt, int *zoom) {
             float zoom = (1 + dt * ZOOM_SPEED);
             width *= zoom;
         }
+
+        if (screen.min.x + width > 180) {
+            width = 180 - screen.min.x;
+        }
         double height = width * A_RATIO;
+        if (screen.min.y + height > 85.0511) {
+            height = 85.0511 - screen.min.y;
+            width = height / A_RATIO;
+        }
 
         Vector2 mouse_pos = GetMousePosition();
 
@@ -241,10 +249,16 @@ MapBB move_screen(MapBB screen, float dt, int *zoom) {
             .x = prev_mouse_coord.x - current_mouse_coord.x,
             .y = prev_mouse_coord.y - current_mouse_coord.y,
         };
-        screen.min.x += displacement.x;
-        screen.max.x += displacement.x;
-        screen.min.y += displacement.y;
-        screen.max.y += displacement.y;
+
+        // clamp screen
+        if (screen.min.x + displacement.x > -180 && screen.max.x + displacement.x < 180) {
+            screen.min.x += displacement.x;
+            screen.max.x += displacement.x;
+        }
+        if (screen.min.y + displacement.y > -85.0511 && screen.max.y + displacement.y < 85.0511) {
+            screen.min.y += displacement.y;
+            screen.max.y += displacement.y;
+        }
 
         z = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
     }
@@ -261,6 +275,7 @@ MapBB move_screen(MapBB screen, float dt, int *zoom) {
             .x = delta.x * x_scale,
             .y = delta.y * y_scale,
         };
+
         // clamp screen
         if (screen.min.x - coord_delta.x > -180 && screen.max.x - coord_delta.x < 180) {
             screen.min.x -= coord_delta.x;
