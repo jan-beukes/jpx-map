@@ -10,18 +10,19 @@
 #include "tile_req.h"
 #include "stb_ds.h"
 
-#define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 720
+#define SCREEN_WIDTH 1600
+#define SCREEN_HEIGHT 900
 #define A_RATIO ((double)SCREEN_HEIGHT/SCREEN_WIDTH)
 
 #define CACHE ".cache"
 
-#define MAX_CACHED_TILES 1000
+#define CACHE_LIFETIME_S 20
+#define CLEANUP_TIMER 2
 
 #define SCREEN_TILE_COUNT 8 // desired tile count
 #define MAX_ZOOM 19
 #define MIN_ZOOM 4
-#define ZOOM_SPEED 10
+#define ZOOM_SPEED 15
 
 #define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
 #define SCREEN_BR(__s) ((Coord){__s.max.x, __s.min.y})
@@ -122,21 +123,23 @@ void pre_cache_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
     }
 }
 
-void render_fallback_tile(Tile t, MapBB screen, Item **tile_cache) {
+void render_fallback_tile(Tile t, MapBB screen, Item *tile_cache) {
     // lower res tiles
     for (int i = 0; i < FALLBACK_LIMIT; i++) {
         t.zoom -= 1;
         t.x /= 2;
         t.y /= 2;
         Item *item;
-        if ((item = hmgetp_null(*tile_cache, t)) == NULL) continue;
+        if ((item = hmgetp_null(tile_cache, t)) == NULL) continue;
         if (item->value.status == TILE_NOT_READY) continue;
 
         if (item->value.status == TILE_LOADED) {
             item->value.status = TILE_READY;
             item->value.texture = LoadTextureFromImage(item->value.tile_img);
+            UnloadImage(item->value.tile_img);
         }
         // found fallback
+        item->value.last_accessed = GetTime(); // update last access time
         Texture texture = item->value.texture;
         Rectangle rec = tile_screen_rect(screen, t);
         Rectangle src = {0, 0, texture.width, texture.height};
@@ -177,14 +180,15 @@ void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
             } else if (item->value.status == TILE_LOADED) {
                 item->value.status = TILE_READY;
                 item->value.texture = LoadTextureFromImage(item->value.tile_img);
+                UnloadImage(item->value.tile_img);
             }
-
             // desired tile is not available
             if (fallback) {
-                render_fallback_tile(t, screen, tile_cache_ptr);
+                render_fallback_tile(t, screen, tile_cache);
                 continue;
             }
             assert(item->value.status == TILE_READY);
+            item->value.last_accessed = GetTime(); // update last access time
             ready_tiles[ready_tile_count++] = *item;
         }
     }
@@ -196,10 +200,6 @@ void render_tiles(MapBB screen, int zoom, Item **tile_cache_ptr) {
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
     }
-
-
-
-    DrawText(TextFormat("Not Loaded %d", unloaded), 10, 50, 30, BLUE);
 
     if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
         increment_threads();
@@ -294,14 +294,34 @@ MapBB move_screen(MapBB screen, float dt, int *zoom) {
     return screen;
 }
 
+// remove cache entries past lifetime
+void clean_cache(Item *tile_cache, int hm_len, double time) {
+
+    for (int i = 0; i < hm_len; i++) {
+        if (time - tile_cache[i].value.last_accessed > CACHE_LIFETIME_S) {
+            if (tile_cache[i].value.status == TILE_READY) {
+                UnloadTexture(tile_cache[i].value.texture);
+            }
+            if (tile_cache[i].value.status == TILE_LOADED) {
+                UnloadImage(tile_cache[i].value.tile_img);
+            }
+            int r = hmdel(tile_cache, tile_cache[i].key);
+        }
+    }
+
+}
+
 int main(int argc, char *argv[]) {
 
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "jpx");
     SetTargetFPS(144);
+    Font font = LoadFontEx("notosans.ttf", 32, NULL, 0);
+    const float font_size = font.baseSize;
 
     // Cache hash map
     Item *tile_cache = NULL;
+    double last_cleanup = GetTime();
     pthread_mutex_init(&mutex, NULL);
 
     Coord tl = {18.84587, -33.9225};
@@ -310,11 +330,18 @@ int main(int argc, char *argv[]) {
 
     int zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
 
-    // TODO: Pre cache large BB around starting BB
     pre_cache_tiles(screen, zoom, &tile_cache);
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+
+        // evict cache
+        double time = GetTime();
+        int hm_len = hmlen(tile_cache);
+        if (time - last_cleanup > CLEANUP_TIMER) {
+            clean_cache(tile_cache, hm_len, time);
+            last_cleanup = GetTime();
+        }
 
         screen = move_screen(screen, dt, &zoom);
 
@@ -323,22 +350,29 @@ int main(int argc, char *argv[]) {
 
         render_tiles(screen, zoom, &tile_cache);
 
-        DrawText(TextFormat("Active Threads %d", active_download_threads), 10, 10, 30, BLUE);
-        DrawText(TextFormat("Zoom: %d", zoom), 10, 90, 30, BLUE);
-        DrawText(TextFormat("Top Left: %.2lf %.2lf", screen.min.x, screen.max.y), 10, 130, 20, RED);
-        DrawText(TextFormat("Bottom Right: %.2lf %.2lf", screen.max.x, screen.min.y), 10, 160, 20, RED);
+        Vector2 t_pos = {10, 10};
+
+        DrawTextEx(font, TextFormat("Active Threads %d", active_download_threads), t_pos, font_size, 0, BLUE);
+        t_pos.y += 40;
+        DrawTextEx(font, TextFormat("Cached Tiles: %d", hm_len), t_pos, font_size, 0, BLUE);
+        t_pos.y += 40;
+        DrawTextEx(font, TextFormat("Zoom: %d", zoom), t_pos, font_size, 0, BLUE);
+        t_pos.y += 40;
+
+        Vector2 mouse_pos = GetMousePosition();
+        Coord mouse_coord = screen_to_coord(mouse_pos, screen);
+        DrawTextEx(font, TextFormat("Mouse coord: (%.2lf, %.2lf)", mouse_coord.x, mouse_coord.y), t_pos, font_size, 0, RED);
 
         EndDrawing();
     }
-    printf("HM length: %ld\n", hmlen(tile_cache));
 
     pthread_mutex_destroy(&mutex);
 
     // Unload cached tiles
     for (int i = 0; i < hmlen(tile_cache); i++) {
         TileData data = tile_cache[i].value;
-        if (data.status == TILE_LOADED) UnloadImage(data.tile_img);
         if (data.status == TILE_READY) UnloadTexture(data.texture);
+        else if (data.status == TILE_LOADED) UnloadImage(data.tile_img);
     }
     CloseWindow();
 

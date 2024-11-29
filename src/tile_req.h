@@ -6,8 +6,8 @@
 #include "map.h"
 
 #define MAX_DL_THREADS 8
-#define MAX_TILES_PER_REQUEST 32
-#define BATCH_SIZE 8
+#define MAX_TILES_PER_REQUEST 64
+#define BATCH_SIZE 16
 
 typedef enum {
     TILE_READY,
