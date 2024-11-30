@@ -3,29 +3,18 @@
 
 #include <raylib.h>
 #include <pthread.h>
-#include "map.h"
+#include "map_renderer.h"
+
+#define CACHE ".cache"
+#define TILE_SET "osm"
+#define FORMAT ".png"
+#define URL "https://tile.openstreetmap.org/%d/%d/%d%s"
+//#define TILE_SET "mapbox.satellite"
+//"https://api.mapbox.com/v4/%s/%d/%d/%d.jpg?access_token=%s"
 
 #define MAX_DL_THREADS 8
 #define MAX_TILES_PER_REQUEST 64
 #define BATCH_SIZE 16
-
-typedef enum {
-    TILE_READY,
-    TILE_LOADED,
-    TILE_NOT_READY,
-} TileDataStatus;
-
-typedef struct {
-    Image tile_img;
-    Texture texture;
-    TileDataStatus status; 
-    long last_accessed; // TODO: implement cache eviction
-} TileData;
-
-typedef struct {
-    Tile key; 
-    TileData value;
-} Item;
 
 typedef struct {
     Tile *tiles;
@@ -37,8 +26,10 @@ typedef struct {
     void (*call_back)(void);
     Item **tile_cache; // cache hash map
     pthread_mutex_t *mutex;
-} DownloadContext;
+} ThreadContext;
 
-void start_download_thread(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void));
+// 
+void fetch_tiles(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void));
+Item *load_tile_from_file(Tile t, Item *tile_cache);
 
 #endif

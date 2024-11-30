@@ -5,10 +5,6 @@
 #include "stb_ds.h"
 #include "tile_req.h"
 
-#define FORMAT ".png"
-#define URL "https://tile.openstreetmap.org/%d/%d/%d%s"
-//#define TILE_SET "mapbox.satellite"
-//"https://api.mapbox.com/v4/%s/%d/%d/%d.jpg?access_token=%s"
 
 typedef struct {
     Tile tile;
@@ -34,7 +30,7 @@ size_t write_memory(void *contents, size_t size, size_t nmemb, void *userp) {
 }
 
 void *downloader_thread_func(void *arg) {
-    DownloadContext *context = (DownloadContext *)arg;
+    ThreadContext *context = (ThreadContext *)arg;
     TileRequest request = context->request;
 
     Tile *tiles = request.tiles;
@@ -87,16 +83,24 @@ void *downloader_thread_func(void *arg) {
 
                     // Got the data
                     if (msg->data.result == CURLE_OK) {
+                        Tile t = chunk->tile;
 
                         Image img = LoadImageFromMemory(FORMAT, chunk->memory, chunk->size);
                         // update cache entry
                         pthread_mutex_lock(context->mutex);
-                        TileData *data = &hmgetp(*context->tile_cache, chunk->tile)->value;
+                        TileData *data = &hmgetp(*context->tile_cache, t)->value;
                         data->tile_img = img;
                         data->status = TILE_LOADED;
+                        data->last_accessed = GetTime();
                         pthread_mutex_unlock(context->mutex);
 
-                        // TODO: save to disk
+                        // Save to disk
+                        char dir[64], fname[128];
+                        sprintf(dir, "%s/%s/%d", CACHE, TILE_SET, t.zoom);
+                        if (!DirectoryExists(dir)) MakeDirectory(dir);
+
+                        sprintf(fname, "%s/%d_%d%s", dir, t.x, t.y, FORMAT);
+                        ExportImage(img, fname);
 
                     } else {
                         free(chunk->memory); // free memory on fail
@@ -138,32 +142,73 @@ void *downloader_thread_func(void *arg) {
     return NULL;
 }
 
-void start_download_thread(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void)) {
-    pthread_t download_thread;
-    DownloadContext *context = malloc(sizeof(DownloadContext));
+Item *load_tile_from_file(Tile t, Item *tile_cache) {
+    char dir[64], fname[128];
+    sprintf(dir, "%s/%s/%d", CACHE, TILE_SET, t.zoom);
+    sprintf(fname, "%s/%d_%d%s", dir, t.x, t.y, FORMAT);
+    if (FileExists(fname)) {
+        // file in cached file
+        Item *item = hmgetp(tile_cache, t);
+        item->value.tile_img = LoadImage(fname);
+        item->value.status = TILE_LOADED;
+        item->value.last_accessed = GetTime();
+        return item;
+    }
 
-    // allocate the requested array of tiles
-    Tile *tiles = malloc(request.tile_count * sizeof(Tile));
-    if (tiles == NULL) printf("failed to allocate requested tiles\n");
+    return NULL;
+}
+
+void *load_tiles_func(void *arg) {
+    ThreadContext *context = (ThreadContext *)arg;
+    TileRequest request = context->request;
+
+    Tile tiles[request.tile_count];
+    int dl_count = 0;
+    for (int i = 0; i < request.tile_count; i++) {
+        Tile t = request.tiles[i];
+
+        // file found
+        if (load_tile_from_file(t, *context->tile_cache) != NULL) continue;
+
+        // else must be downloaded
+        tiles[dl_count++] = t;
+    }
+
+    memset(context->request.tiles, 0, request.tile_count);
+    memcpy(context->request.tiles, tiles, dl_count);
+    context->request.tile_count = dl_count;
+
+    pthread_t download_thread;
+    if (dl_count > 0) {
+        pthread_create(&download_thread, NULL, downloader_thread_func, context);
+        pthread_detach(download_thread);
+    } else {
+        context->call_back();
+    }
+
+    return NULL;
+}
+
+// adds tiles to cache and starts thread to load tiles
+void fetch_tiles(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void)) {
+    // add all requested tiles to cache
+    Tile *tiles = malloc(sizeof(Tile) * request.tile_count);
     for (int i = 0; i < request.tile_count; i++) {
         Tile t = request.tiles[i];
         tiles[i] = t;
-
-        // add them as cache entry
         TileData data = {0};
         data.status = TILE_NOT_READY;
         hmput(*tile_cache, t, data);
     }
-    TileRequest req = {
-        .tiles = tiles,
-        .tile_count = request.tile_count,
-    };
 
-    context->request = req;
-    context->call_back = call_back;
+    pthread_t loader_thread;
+    ThreadContext *context = malloc(sizeof(ThreadContext));
+    context->request = (TileRequest){tiles, request.tile_count};
     context->tile_cache = tile_cache;
     context->mutex = mutex;
+    context->call_back = call_back;
 
-    pthread_create(&download_thread, NULL, downloader_thread_func, context);
-    pthread_detach(download_thread);
+    pthread_create(&loader_thread, NULL, load_tiles_func, context);
+    pthread_detach(loader_thread);
 }
+
