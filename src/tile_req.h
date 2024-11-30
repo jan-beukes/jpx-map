@@ -30,6 +30,6 @@ typedef struct {
 
 // 
 void fetch_tiles(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void));
-Item *load_tile_from_file(Tile t, Item *tile_cache);
+bool load_tile_from_file(Tile t, TileData *data);
 
 #endif

@@ -5,7 +5,6 @@
 #include "stb_ds.h"
 #include "tile_req.h"
 
-
 typedef struct {
     Tile tile;
     unsigned char *memory;
@@ -86,6 +85,7 @@ void *downloader_thread_func(void *arg) {
                         Tile t = chunk->tile;
 
                         Image img = LoadImageFromMemory(FORMAT, chunk->memory, chunk->size);
+                        if (img.data == NULL) printf("HUH\n");
                         // update cache entry
                         pthread_mutex_lock(context->mutex);
                         TileData *data = &hmgetp(*context->tile_cache, t)->value;
@@ -142,73 +142,48 @@ void *downloader_thread_func(void *arg) {
     return NULL;
 }
 
-Item *load_tile_from_file(Tile t, Item *tile_cache) {
+bool load_tile_from_file(Tile t, TileData *data) {
     char dir[64], fname[128];
     sprintf(dir, "%s/%s/%d", CACHE, TILE_SET, t.zoom);
     sprintf(fname, "%s/%d_%d%s", dir, t.x, t.y, FORMAT);
     if (FileExists(fname)) {
-        // file in cached file
-        Item *item = hmgetp(tile_cache, t);
-        item->value.tile_img = LoadImage(fname);
-        item->value.status = TILE_LOADED;
-        item->value.last_accessed = GetTime();
-        return item;
+        // tile in cached file
+        data->texture = LoadTexture(fname);
+        data->status = TILE_READY;
+        data->last_accessed = GetTime();
+        return true;
     }
 
-    return NULL;
+    return false;
 }
 
-void *load_tiles_func(void *arg) {
-    ThreadContext *context = (ThreadContext *)arg;
-    TileRequest request = context->request;
-
-    Tile tiles[request.tile_count];
-    int dl_count = 0;
-    for (int i = 0; i < request.tile_count; i++) {
-        Tile t = request.tiles[i];
-
-        // file found
-        if (load_tile_from_file(t, *context->tile_cache) != NULL) continue;
-
-        // else must be downloaded
-        tiles[dl_count++] = t;
-    }
-
-    memset(context->request.tiles, 0, request.tile_count);
-    memcpy(context->request.tiles, tiles, dl_count);
-    context->request.tile_count = dl_count;
-
-    pthread_t download_thread;
-    if (dl_count > 0) {
-        pthread_create(&download_thread, NULL, downloader_thread_func, context);
-        pthread_detach(download_thread);
-    } else {
-        context->call_back();
-    }
-
-    return NULL;
-}
-
-// adds tiles to cache and starts thread to load tiles
 void fetch_tiles(TileRequest request, Item **tile_cache, pthread_mutex_t *mutex, void (*call_back)(void)) {
     // add all requested tiles to cache
     Tile *tiles = malloc(sizeof(Tile) * request.tile_count);
+    int count = 0;;
+
     for (int i = 0; i < request.tile_count; i++) {
         Tile t = request.tiles[i];
-        tiles[i] = t;
         TileData data = {0};
-        data.status = TILE_NOT_READY;
+        if (!load_tile_from_file(t, &data)) {
+            data.status = TILE_NOT_READY;
+            tiles[count++] = t;
+        }
         hmput(*tile_cache, t, data);
     }
 
-    pthread_t loader_thread;
-    ThreadContext *context = malloc(sizeof(ThreadContext));
-    context->request = (TileRequest){tiles, request.tile_count};
-    context->tile_cache = tile_cache;
-    context->mutex = mutex;
-    context->call_back = call_back;
+    pthread_t download_thread;
+    if (count > 0) {
+        ThreadContext *context = malloc(sizeof(ThreadContext));
+        context->request = (TileRequest){tiles, count};
+        context->tile_cache = tile_cache;
+        context->mutex = mutex;
+        context->call_back = call_back;
 
-    pthread_create(&loader_thread, NULL, load_tiles_func, context);
-    pthread_detach(loader_thread);
+        pthread_create(&download_thread, NULL, downloader_thread_func, context);
+        pthread_detach(download_thread);
+    } else {
+        call_back();
+    }
+
 }
-

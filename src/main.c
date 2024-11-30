@@ -38,15 +38,15 @@ void clean_cache(Item *tile_cache, int hm_len, double time) {
 int main(int argc, char *argv[]) {
     SetTraceLogLevel(LOG_WARNING);
 
-    Font font = LoadFontEx("notosans.ttf", 32, NULL, 0);
-    const float font_size = font.baseSize;
-
     Coord tl = {18.84587, -33.9225};
     double width = 0.0699;
     MapBB screen = get_rect_bb(tl, width, width*A_RATIO);
 
     Renderer r;
     init_map_renderer(&r, screen, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    Font font = LoadFontEx("notosans.ttf", 32, NULL, 0);
+    const float font_size = font.baseSize;
 
     // Tile Cache 
     double last_cleanup = GetTime();
@@ -70,8 +70,7 @@ int main(int argc, char *argv[]) {
 
         render_tiles(&r);
 
-        // UI
-
+        // DEBUG
         Vector2 t_pos = {10, 50};
         DrawTextEx(font, TextFormat("Cached Tiles: %d", hm_len), t_pos, font_size, 0, BLUE);
         t_pos.y += 40;
@@ -80,10 +79,18 @@ int main(int argc, char *argv[]) {
 
         Vector2 mouse_pos = GetMousePosition();
         Coord mouse_coord = screen_to_coord(&r, mouse_pos);
-        DrawTextEx(font, TextFormat("Mouse coord: (%.2lf, %.2lf)", mouse_coord.x, mouse_coord.y), t_pos, font_size, 0, RED);
+        DrawTextEx(font, TextFormat("Mouse coord: (%.2lf, %.2lf)", mouse_coord.x, mouse_coord.y), t_pos, font_size, 0, BLUE);
+        t_pos.y += 50;
+        DrawTextEx(font, "Screen:", t_pos, font_size, 0, RED);
+        t_pos.y += 40;
+        DrawTextEx(font, TextFormat("(%.2lf, %.2lf) (%.2lf, %.2lf)", r.screen.min.x, r.screen.min.y,
+                                    r.screen.max.x, r.screen.max.y), t_pos, font_size, 0, RED);
+
+        const int scale = 5000;
+        DrawRectangleLines(10, t_pos.y + 40, (screen.max.x - screen.min.x)*scale, (screen.max.y - screen.min.y)*scale, RED);
+
 
         DrawFPS(SCREEN_WIDTH - 100, 10);
-
         EndDrawing();
     }
 

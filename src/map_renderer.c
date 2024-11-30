@@ -1,5 +1,7 @@
 #include <math.h>
+#include <stdio.h>
 #include <raylib.h>
+#include <raymath.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -10,7 +12,7 @@
 #define SCREEN_TILE_COUNT 8 // desired tile count
 #define MAX_ZOOM 19
 #define MIN_ZOOM 4
-#define ZOOM_SPEED 0.2
+#define ZOOM_SPEED 0.15
 
 #define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
 #define SCREEN_BR(__s) ((Coord){__s.max.x, __s.min.y})
@@ -24,6 +26,7 @@ static atomic_int active_download_threads = 0;
 void increment_threads() {
     atomic_fetch_add(&active_download_threads, 1);
 }
+
 void decrement_threads() {
     atomic_fetch_sub(&active_download_threads, 1);
     assert(atomic_load(&active_download_threads) >= 0);
@@ -119,7 +122,7 @@ void init_map_renderer(Renderer *r, MapBB screen, int width, int height) {
     pthread_mutex_init(&r->mutex, NULL);
 
     InitWindow(r->width, r->height, "Jpx");
-
+    SetTargetFPS(144);
 }
 
 void deinit_map_renderer(Renderer *r){
@@ -145,7 +148,7 @@ void render_fallback_tile(Tile t, Renderer *r) {
         
         item = hmgetp_null(r->tile_cache, t);
         if (item == NULL) {
-            item = load_tile_from_file(t, r->tile_cache);
+            //item = load_tile_from_file(t, r->tile_cache);
             // item couldnt be loaded from file
             if (item == NULL) continue;
         }
@@ -223,8 +226,8 @@ void render_tiles(Renderer *r) {
             .tiles = request_tiles,
             .tile_count = tile_req_count,
         };
-        fetch_tiles(request, &r->tile_cache, &r->mutex, decrement_threads);
         increment_threads();
+        fetch_tiles(request, &r->tile_cache, &r->mutex, decrement_threads);
     }
 
     DrawText(TextFormat("Active Threads %d", active_download_threads), 10, 10, 30, BLUE);
@@ -240,16 +243,16 @@ void move_screen(Renderer *r) {
         double width = r->screen.max.x - r->screen.min.x;
         double height = r->screen.max.y - r->screen.min.y;
         if (wheel_dir > 0) {
+            width /= 1 + ZOOM_SPEED;
+            height /= 1 + ZOOM_SPEED;
+        } else {
             double w, h;
-            w = width / (1 + ZOOM_SPEED);
-            h = height / (1 + ZOOM_SPEED);
+            w = width * (1 + ZOOM_SPEED);
+            h = height * (1 + ZOOM_SPEED);
             if (r->screen.min.x + w < 180 && r->screen.min.y + h < 85.0511) {
                 width = w;
                 height = h;
             }
-        } else {
-            width *= 1 + ZOOM_SPEED;
-            height *= 1 + ZOOM_SPEED;
         }
         Vector2 mouse_pos = GetMousePosition();
 
@@ -280,24 +283,22 @@ void move_screen(Renderer *r) {
     // Movement
     if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
         SetMouseCursor(MOUSE_CURSOR_RESIZE_ALL);
-        Vector2 delta = GetMouseDelta();
 
-        double x_scale = (r->screen.max.x - r->screen.min.x) / r->width;
-        double y_scale = (r->screen.max.y - r->screen.min.y) / r->height;
+        Vector2 curr_mouse_pos = GetMousePosition();
+        Vector2 prev_mouse_pos = Vector2Subtract(curr_mouse_pos, GetMouseDelta());
 
-        Coord coord_delta = {
-            .x = delta.x * x_scale,
-            .y = delta.y * y_scale,
-        };
+        Coord coord_delta;
+        coord_delta.x = screen_to_coord(r, curr_mouse_pos).x - screen_to_coord(r, prev_mouse_pos).x;
+        coord_delta.y = screen_to_coord(r, curr_mouse_pos).y - screen_to_coord(r, prev_mouse_pos).y;
 
-        // clamp r->screen
+        // clamp screen
         if (r->screen.min.x - coord_delta.x > -180 && r->screen.max.x - coord_delta.x < 180) {
             r->screen.min.x -= coord_delta.x;
             r->screen.max.x -= coord_delta.x;
         }
-        if (r->screen.min.y + coord_delta.y > -85.0511 && r->screen.max.y + coord_delta.y < 85.0511) {
-            r->screen.min.y += coord_delta.y;
-            r->screen.max.y += coord_delta.y;
+        if (r->screen.min.y - coord_delta.y > -85.0511 && r->screen.max.y - coord_delta.y < 85.0511) {
+            r->screen.min.y -= coord_delta.y;
+            r->screen.max.y -= coord_delta.y;
         }
 
     } else {
@@ -305,4 +306,3 @@ void move_screen(Renderer *r) {
     }
 
 }
-
