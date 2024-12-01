@@ -11,7 +11,7 @@
 
 #define SCREEN_TILE_COUNT 8 // desired tile count
 #define MAX_ZOOM 19
-#define MIN_ZOOM 4
+#define MIN_ZOOM 2
 #define ZOOM_SPEED 0.15
 
 #define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
@@ -60,6 +60,21 @@ Vector2 coord_to_pixel_space(Coord p, int zoom) {
     return v;
 }
 
+// Function to convert Mercator pixel coordinates to longitude and latitude
+Coord pixel_space_to_coord(Vector2 p, int zoom) {
+    Coord c;
+
+    int scale = 256 * (1 << zoom);
+    // Normalize pixel coordinates to [0, 1]
+    double mercator_x = (double)p.x / scale;
+    double mercator_y = (double)p.y / scale;
+    // Convert to longitude
+    c.x = mercator_x * 360.0 - 180.0;
+    // Convert to latitude using inverse Mercator formula
+    c.y = atan(sinh(M_PI * (1.0 - 2.0 * mercator_y))) * (180.0 / M_PI);
+    return c;
+}
+
 MapBB get_rect_bb(Coord top_left, double width, double height) {
     MapBB b;
     b.min.x = top_left.x;
@@ -83,13 +98,20 @@ Vector2 point_to_screen(Renderer *r, Coord p) {
 }
 
 Coord screen_to_coord(Renderer *r, Vector2 screen_pos) {
-    double width = r->screen.max.x - r->screen.min.x;
-    double height = r->screen.max.y - r->screen.min.y;
 
-    double x_coord = r->screen.min.x + screen_pos.x * (width / r->width); 
-    double y_coord = r->screen.max.y - screen_pos.y * (height / r->height);
+    Vector2 pixel_tl = coord_to_pixel_space(SCREEN_TL(r->screen), r->zoom);
+    Vector2 pixel_br = coord_to_pixel_space(SCREEN_BR(r->screen), r->zoom);
+    double scale = fmax(
+        r->width / (pixel_br.x - pixel_tl.x),
+        r->height / (pixel_br.y - pixel_tl.y)
+    );
 
-    return (Coord) {x_coord, y_coord};
+    Vector2 pixel_pos = {
+        .x = pixel_tl.x + screen_pos.x/scale,
+        .y = pixel_tl.y + screen_pos.y/scale,
+    };
+
+    return pixel_space_to_coord(pixel_pos, r->zoom);
 }
 
 Rectangle tile_screen_rect(Renderer *r, Tile t) {
@@ -98,8 +120,8 @@ Rectangle tile_screen_rect(Renderer *r, Tile t) {
     Vector2 pixel_bottomright = coord_to_pixel_space(SCREEN_BR(r->screen), t.zoom);
 
     double scale = fmax(
-            r->width / (pixel_bottomright.x - pixel_topleft.x),
-            r->height / (pixel_bottomright.y - pixel_topleft.y)
+        r->width / (pixel_bottomright.x - pixel_topleft.x),
+        r->height / (pixel_bottomright.y - pixel_topleft.y)
     );
 
     double tile_pixel_x = t.x * 256;
@@ -165,7 +187,7 @@ void render_fallback_tile(Tile t, Renderer *r) {
         Rectangle rec = tile_screen_rect(r, t);
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
-        //DrawRectangleLinesEx(rec, 1, DARKGREEN);
+        DrawRectangleLinesEx(rec, 1, DARKGREEN);
         return;
     }
 
@@ -219,6 +241,7 @@ void render_tiles(Renderer *r) {
         Rectangle rec = tile_screen_rect(r, item.key);
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
+        DrawRectangleLinesEx(rec, 1, DARKGREEN);
     }
 
     if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
@@ -240,6 +263,13 @@ void move_screen(Renderer *r) {
     if (((wheel_dir = GetMouseWheelMove()) > 0 && r->zoom < MAX_ZOOM)
         || (wheel_dir < 0 && r->zoom > MIN_ZOOM)) { 
 
+        Vector2 pixel_tl = coord_to_pixel_space(SCREEN_TL(r->screen), r->zoom);
+        Vector2 pixel_br = coord_to_pixel_space(SCREEN_BR(r->screen), r->zoom);
+        double scale = fmax(
+            r->width / (pixel_br.x - pixel_tl.x),
+            r->height / (pixel_br.y - pixel_tl.y)
+        );
+
         double width = r->screen.max.x - r->screen.min.x;
         double height = r->screen.max.y - r->screen.min.y;
         if (wheel_dir > 0) {
@@ -259,11 +289,14 @@ void move_screen(Renderer *r) {
         Coord prev_mouse_coord = screen_to_coord(r, mouse_pos);
         r->screen.max.x = r->screen.min.x + width;
         r->screen.max.y = r->screen.min.y + height;
+        r->zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
         Coord current_mouse_coord = screen_to_coord(r, mouse_pos);
         Coord displacement = {
             .x = prev_mouse_coord.x - current_mouse_coord.x,
             .y = prev_mouse_coord.y - current_mouse_coord.y,
         };
+        printf("prev, curr: %lf, %lf\n", prev_mouse_coord.y, current_mouse_coord.y);
+        printf("displace: %lf\n", displacement.y);
 
         // clamp r->screen
         if (r->screen.min.x + displacement.x > -180 
@@ -276,8 +309,6 @@ void move_screen(Renderer *r) {
             r->screen.min.y += displacement.y;
             r->screen.max.y += displacement.y;
         }
-
-        r->zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
     }
 
     // Movement

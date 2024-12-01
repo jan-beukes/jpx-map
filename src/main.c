@@ -86,9 +86,6 @@ int main(int argc, char *argv[]) {
         DrawTextEx(font, TextFormat("(%.2lf, %.2lf) (%.2lf, %.2lf)", r.screen.min.x, r.screen.min.y,
                                     r.screen.max.x, r.screen.max.y), t_pos, font_size, 0, RED);
 
-        const int scale = 5000;
-        DrawRectangleLines(10, t_pos.y + 40, (screen.max.x - screen.min.x)*scale, (screen.max.y - screen.min.y)*scale, RED);
-
 
         DrawFPS(SCREEN_WIDTH - 100, 10);
         EndDrawing();
