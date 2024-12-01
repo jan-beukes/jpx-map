@@ -11,7 +11,7 @@
 
 #define SCREEN_TILE_COUNT 8 // desired tile count
 #define MAX_ZOOM 19
-#define MIN_ZOOM 2
+#define MIN_ZOOM 4
 #define ZOOM_SPEED 0.15
 
 #define SCREEN_TL(__s) ((Coord){__s.min.x, __s.max.y})
@@ -84,16 +84,23 @@ MapBB get_rect_bb(Coord top_left, double width, double height) {
     return b;
 }
 
-Vector2 point_to_screen(Renderer *r, Coord p) {
-    double width = r->screen.max.x - r->screen.min.x;
-    double height = r->screen.max.y - r->screen.min.y;
+Vector2 coord_to_screen(Renderer *r, Coord p) {
+    Vector2 pixel_topleft = coord_to_pixel_space(SCREEN_TL(r->screen), r->zoom);
+    Vector2 pixel_bottomright = coord_to_pixel_space(SCREEN_BR(r->screen), r->zoom);
 
-    double x_ratio = (p.x - r->screen.min.x) / width;
-    double y_ratio = (r->screen.max.y - p.y) / height;
+    double scale = fmax(
+        r->width / (pixel_bottomright.x - pixel_topleft.x),
+        r->height / (pixel_bottomright.y - pixel_topleft.y)
+    );
+
+    Vector2 pixel_coord = coord_to_pixel_space(p, r->zoom);
+
+    float x_screen = (pixel_coord.x - pixel_topleft.x) * scale;
+    float y_screen = (pixel_coord.y - pixel_topleft.y) * scale;
 
     return (Vector2) {
-        .x = x_ratio * r->width,
-        .y = y_ratio * r->height,
+        .x = x_screen,
+        .y = y_screen,
     };
 }
 
@@ -187,7 +194,7 @@ void render_fallback_tile(Tile t, Renderer *r) {
         Rectangle rec = tile_screen_rect(r, t);
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
-        DrawRectangleLinesEx(rec, 1, DARKGREEN);
+        //DrawRectangleLinesEx(rec, 1, DARKGREEN);
         return;
     }
 
@@ -241,7 +248,7 @@ void render_tiles(Renderer *r) {
         Rectangle rec = tile_screen_rect(r, item.key);
         Rectangle src = {0, 0, texture.width, texture.height};
         DrawTexturePro(texture, src, rec, (Vector2){0,0}, 0, WHITE);
-        DrawRectangleLinesEx(rec, 1, DARKGREEN);
+        //DrawRectangleLinesEx(rec, 1, DARKGREEN);
     }
 
     if (atomic_load(&active_download_threads) < MAX_DL_THREADS && tile_req_count > 0) {
@@ -263,13 +270,6 @@ void move_screen(Renderer *r) {
     if (((wheel_dir = GetMouseWheelMove()) > 0 && r->zoom < MAX_ZOOM)
         || (wheel_dir < 0 && r->zoom > MIN_ZOOM)) { 
 
-        Vector2 pixel_tl = coord_to_pixel_space(SCREEN_TL(r->screen), r->zoom);
-        Vector2 pixel_br = coord_to_pixel_space(SCREEN_BR(r->screen), r->zoom);
-        double scale = fmax(
-            r->width / (pixel_br.x - pixel_tl.x),
-            r->height / (pixel_br.y - pixel_tl.y)
-        );
-
         double width = r->screen.max.x - r->screen.min.x;
         double height = r->screen.max.y - r->screen.min.y;
         if (wheel_dir > 0) {
@@ -279,35 +279,39 @@ void move_screen(Renderer *r) {
             double w, h;
             w = width * (1 + ZOOM_SPEED);
             h = height * (1 + ZOOM_SPEED);
-            if (r->screen.min.x + w < 180 && r->screen.min.y + h < 85.0511) {
+            bool hit_top = r->screen.min.y + h > 85.0511;
+            bool hit_bot = r->screen.max.y - h < -85.0511;
+            if (r->screen.min.x + w < 180 && 
+                (r->screen.min.y + h < 0 ? !hit_top : !hit_bot)) {
                 width = w;
                 height = h;
             }
         }
         Vector2 mouse_pos = GetMousePosition();
-
-        Coord prev_mouse_coord = screen_to_coord(r, mouse_pos);
-        r->screen.max.x = r->screen.min.x + width;
-        r->screen.max.y = r->screen.min.y + height;
-        r->zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
-        Coord current_mouse_coord = screen_to_coord(r, mouse_pos);
-        Coord displacement = {
-            .x = prev_mouse_coord.x - current_mouse_coord.x,
-            .y = prev_mouse_coord.y - current_mouse_coord.y,
-        };
-        printf("prev, curr: %lf, %lf\n", prev_mouse_coord.y, current_mouse_coord.y);
-        printf("displace: %lf\n", displacement.y);
-
-        // clamp r->screen
-        if (r->screen.min.x + displacement.x > -180 
-            && r->screen.max.x + displacement.x < 180) {
-            r->screen.min.x += displacement.x;
-            r->screen.max.x += displacement.x;
+        Coord mouse_coord = screen_to_coord(r, mouse_pos);
+        if (r->screen.min.y + height < 0) {
+            r->screen.max.y = r->screen.min.y + height;
+        } else {
+            r->screen.min.y = r->screen.max.y - height;
         }
-        if (r->screen.min.y + displacement.y > -85.0511
-            && r->screen.max.y + displacement.y < 85.0511) {
-            r->screen.min.y += displacement.y;
-            r->screen.max.y += displacement.y;
+        r->screen.max.x = r->screen.min.x + width;
+        r->zoom = ZOOM_FROM_WIDTH(width/SCREEN_TILE_COUNT);
+        Vector2 screen_pos = coord_to_screen(r, mouse_coord);
+
+        Coord coord_delta;
+        coord_delta.x = screen_to_coord(r, screen_pos).x - screen_to_coord(r, mouse_pos).x;
+        coord_delta.y = screen_to_coord(r, screen_pos).y - screen_to_coord(r, mouse_pos).y;
+
+        // clamp screen
+        if (r->screen.min.x + coord_delta.x > -180 
+            && r->screen.max.x + coord_delta.x < 180) {
+            r->screen.min.x += coord_delta.x;
+            r->screen.max.x += coord_delta.x;
+        }
+        if (r->screen.min.y + coord_delta.y > -85.0511
+            && r->screen.max.y + coord_delta.y < 85.0511) {
+            r->screen.min.y += coord_delta.y;
+            r->screen.max.y += coord_delta.y;
         }
     }
 
@@ -335,5 +339,6 @@ void move_screen(Renderer *r) {
     } else {
         SetMouseCursor(MOUSE_CURSOR_DEFAULT);
     }
+
 
 }
