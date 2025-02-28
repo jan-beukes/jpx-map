@@ -1,3 +1,4 @@
+
 CC = gcc
 CFLAGS = -Wall -g
 LFLAGS = -L libs -lcurl -lraylib -lm -lpthread

@@ -108,6 +108,8 @@ int main(int argc, char *argv[]) {
         }
 
         // DEBUG
+        DrawTextEx(font, TextFormat("Active Threads %d", get_thread_count()), (Vector2){10, 10}, font_size, 0, BLUE);
+
         Vector2 t_pos = {10, 50};
         DrawTextEx(font, TextFormat("Cached Tiles: %d", hm_len), t_pos, font_size, 0, BLUE);
         t_pos.y += 40;
@@ -132,7 +134,6 @@ int main(int argc, char *argv[]) {
             DrawTextEx(font, TextFormat("Points: %d", track.count), t_pos, font_size, 0, RED);
         }
 
-        DrawFPS(SCREEN_WIDTH - 100, 10);
         EndDrawing();
     }
 

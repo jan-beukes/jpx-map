@@ -50,6 +50,8 @@ typedef struct {
     pthread_mutex_t mutex;
 } Renderer;
 
+int get_thread_count();
+
 Coord screen_to_coord(Renderer *r, Vector2 screen_pos);
 Vector2 coord_to_screen(Renderer *r, Coord p);
 MapBB get_rect_bb(Coord top_left, double width, double height);
