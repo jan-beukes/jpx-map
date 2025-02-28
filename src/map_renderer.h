@@ -51,6 +51,7 @@ typedef struct {
 } Renderer;
 
 Coord screen_to_coord(Renderer *r, Vector2 screen_pos);
+Vector2 coord_to_screen(Renderer *r, Coord p);
 MapBB get_rect_bb(Coord top_left, double width, double height);
 
 void init_map_renderer(Renderer *r, MapBB screen, int width, int height);
